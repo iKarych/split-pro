@@ -22,6 +22,8 @@ const createMockUser = (id: number, name: string, email: string): User => ({
   email,
   currency: 'USD',
   defaultCurrency: null,
+  isGuest: false,
+  guestCreatedById: null,
   emailVerified: null,
   image: null,
   preferredLanguage: 'en',

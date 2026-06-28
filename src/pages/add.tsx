@@ -69,6 +69,8 @@ const AddPage: NextPageWithUser<{
       name: user.name ?? null,
       email: user.email ?? null,
       image: user.image ?? null,
+      isGuest: user.isGuest ?? false,
+      guestCreatedById: user.guestCreatedById ?? null,
       obapiProviderId: user.obapiProviderId ?? null,
       bankingId: user.bankingId ?? null,
     });

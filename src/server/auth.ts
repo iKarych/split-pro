@@ -30,6 +30,8 @@ declare module 'next-auth' {
       bankingId?: string;
       preferredLanguage: string;
       hiddenFriendIds: number[];
+      isGuest: boolean;
+      guestCreatedById: number | null;
       // ...other properties
       // Role: UserRole;
     };
@@ -46,6 +48,8 @@ declare module 'next-auth' {
     bankingId?: string;
     preferredLanguage: string;
     hiddenFriendIds: number[];
+    isGuest: boolean;
+    guestCreatedById: number | null;
   }
 }
 
@@ -122,6 +126,8 @@ export const authOptions: NextAuthOptions = {
         bankingId: user.bankingId,
         preferredLanguage: user.preferredLanguage,
         hiddenFriendIds: user.hiddenFriendIds,
+        isGuest: user.isGuest,
+        guestCreatedById: user.guestCreatedById,
       },
     }),
     async signIn({ user, email }) {

@@ -38,6 +38,24 @@ export const userRouter = createTRPCRouter({
     return friends.map((f) => f.friend);
   }),
 
+  searchUsers: protectedProcedure
+    .input(z.object({ query: z.string().trim().min(2).max(80) }))
+    .query(async ({ input }) => {
+      const users = await db.user.findMany({
+        where: {
+          isGuest: false,
+          OR: [
+            { name: { contains: input.query, mode: 'insensitive' } },
+            { email: { contains: input.query, mode: 'insensitive' } },
+          ],
+        },
+        orderBy: [{ name: 'asc' }, { email: 'asc' }],
+        take: 10,
+      });
+
+      return users;
+    }),
+
   getOwnExpenses: protectedProcedure.query(async ({ ctx }) => {
     const expenses = await db.expense.findMany({
       where: {

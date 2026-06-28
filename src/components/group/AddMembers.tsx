@@ -4,6 +4,7 @@ import { clsx } from 'clsx';
 import { CheckIcon, SendIcon } from 'lucide-react';
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'next-i18next';
+import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { Button } from '~/components/ui/button';
@@ -25,6 +26,7 @@ const AddMembers: React.FC<{
 
   const friendsQuery = api.user.getFriends.useQuery();
   const addMembersMutation = api.group.addMembers.useMutation();
+  const createGuestMemberMutation = api.group.createGuestMember.useMutation();
   const addFriendMutation = api.user.inviteFriend.useMutation();
 
   const utils = api.useUtils();
@@ -82,6 +84,8 @@ const AddMembers: React.FC<{
   );
 
   const isEmail = z.string().email().safeParse(inputValue);
+  const trimmedInputValue = inputValue.trim();
+  const canCreateGuest = '' !== trimmedInputValue && !isEmail.success;
 
   function onAddEmailClick(invite = false) {
     if (isEmail.success) {
@@ -95,6 +99,36 @@ const AddMembers: React.FC<{
       );
     }
   }
+
+  const onCreateGuestClick = useCallback(() => {
+    if (!canCreateGuest) {
+      return;
+    }
+
+    createGuestMemberMutation.mutate(
+      { groupId: group.id, name: trimmedInputValue },
+      {
+        onSuccess: () => {
+          toast.success(t('group_details.messages.guest_created'));
+          setInputValue('');
+          setOpen(false);
+          utils.group.getGroupDetails.invalidate({ groupId: group.id }).catch(console.error);
+          utils.group.getAllGroupsWithBalances.invalidate().catch(console.error);
+        },
+        onError: () => {
+          toast.error(t('errors.something_went_wrong'));
+        },
+      },
+    );
+  }, [
+    canCreateGuest,
+    createGuestMemberMutation,
+    group.id,
+    t,
+    trimmedInputValue,
+    utils.group.getAllGroupsWithBalances,
+    utils.group.getGroupDetails,
+  ]);
 
   const handleTriggerClick = useCallback(() => setOpen(true), []);
 
@@ -154,6 +188,16 @@ const AddMembers: React.FC<{
             {isEmail.success
               ? t('group_details.no_members.add_members_details.add_to_split_pro')
               : t('errors.valid_email')}
+          </Button>
+          <Button
+            className="mt-4 w-full text-cyan-500"
+            variant="outline"
+            disabled={!canCreateGuest || createGuestMemberMutation.isPending}
+            loading={createGuestMemberMutation.isPending}
+            onClick={onCreateGuestClick}
+          >
+            <UserPlusIcon className="mr-2 h-4 w-4" />
+            {t('group_details.no_members.add_members_details.create_guest')}
           </Button>
         </div>
       </div>

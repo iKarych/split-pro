@@ -47,6 +47,8 @@ model User {
   currency             String               @default("USD")
   defaultCurrency      String?
   preferredLanguage    String               @default("")
+  isGuest              Boolean              @default(false)
+  guestCreatedById     Int?
   bankingId            String?
   obapiProviderId      String?
   accounts             Account[]
@@ -66,6 +68,7 @@ model User {
   sessions             Session[]
   hiddenFriendIds      Int[]                @default([])
 
+  @@index([isGuest])
   @@schema("public")
 }
 

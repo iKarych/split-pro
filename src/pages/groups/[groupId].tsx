@@ -35,6 +35,7 @@ import { Switch } from '~/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { UpdateName } from '~/components/Account/UpdateDetails';
 import { CurrencyPicker } from '~/components/AddExpense/CurrencyPicker';
+import { ConvertGuestMember } from '~/components/group/ConvertGuestMember';
 import { env } from '~/env';
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import { deserializeDefaultSplit } from '~/lib/defaultSplit';
@@ -235,7 +236,14 @@ const BalancePage: NextPageWithUser<{
                     <div key={groupUser.userId} className="flex items-center justify-between">
                       <div className={clsx('flex items-center gap-2 rounded-md py-1.5')}>
                         <EntityAvatar entity={groupUser.user} />
-                        <p>{displayName(groupUser.user)}</p>
+                        <div className="flex min-w-0 flex-col">
+                          <p className="truncate">{displayName(groupUser.user)}</p>
+                          {groupUser.user.isGuest ? (
+                            <span className="text-muted-foreground text-xs">
+                              {t('actors.guest')}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                       {groupUser.userId === groupDetailQuery.data?.userId ? (
                         <p className="text-sm text-gray-400">{t('actors.owner')}</p>
@@ -247,29 +255,51 @@ const BalancePage: NextPageWithUser<{
                           );
 
                           return (
-                            <SimpleConfirmationDialog
-                              title={
-                                canLeave
-                                  ? t('group_details.group_info.remove_member_details.title')
-                                  : ''
-                              }
-                              description={
-                                canLeave
-                                  ? t('group_details.group_info.remove_member_details.can_remove')
-                                  : t('group_details.group_info.remove_member_details.cant_remove')
-                              }
-                              hasPermission={canLeave}
-                              onConfirm={() => onGroupLeave(groupUser.userId)}
-                              loading={leaveGroupMutation.isPending}
-                              variant="destructive"
-                            >
-                              <Button
-                                variant="ghost"
-                                className="justify-start p-0 text-left text-red-500 hover:text-red-500 hover:opacity-90"
+                            <div className="flex items-center gap-2">
+                              {groupUser.user.isGuest ? (
+                                <ConvertGuestMember
+                                  groupId={groupId}
+                                  guestUser={groupUser.user}
+                                  onConverted={() => {
+                                    void groupDetailQuery.refetch();
+                                    void expensesQuery.refetch();
+                                  }}
+                                >
+                                  <Button
+                                    variant="ghost"
+                                    className="justify-start p-0 text-left text-cyan-500 hover:text-cyan-500 hover:opacity-90"
+                                    disabled={isArchived}
+                                  >
+                                    <UserPlus className="mr-2 h-5 w-5" />
+                                  </Button>
+                                </ConvertGuestMember>
+                              ) : null}
+                              <SimpleConfirmationDialog
+                                title={
+                                  canLeave
+                                    ? t('group_details.group_info.remove_member_details.title')
+                                    : ''
+                                }
+                                description={
+                                  canLeave
+                                    ? t('group_details.group_info.remove_member_details.can_remove')
+                                    : t(
+                                        'group_details.group_info.remove_member_details.cant_remove',
+                                      )
+                                }
+                                hasPermission={canLeave}
+                                onConfirm={() => onGroupLeave(groupUser.userId)}
+                                loading={leaveGroupMutation.isPending}
+                                variant="destructive"
                               >
-                                <X className="mr-2 h-5 w-5" />
-                              </Button>
-                            </SimpleConfirmationDialog>
+                                <Button
+                                  variant="ghost"
+                                  className="justify-start p-0 text-left text-red-500 hover:text-red-500 hover:opacity-90"
+                                >
+                                  <X className="mr-2 h-5 w-5" />
+                                </Button>
+                              </SimpleConfirmationDialog>
+                            </div>
                           );
                         })()
                       )}

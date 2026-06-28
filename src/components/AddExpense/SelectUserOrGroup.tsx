@@ -57,6 +57,8 @@ export const SelectUserOrGroup: React.FC<{
           image: null,
           currency: 'USD',
           defaultCurrency: null,
+          isGuest: false,
+          guestCreatedById: null,
           obapiProviderId: null,
           bankingId: null,
           preferredLanguage: '',

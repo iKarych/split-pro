@@ -13,6 +13,34 @@ import {
   serializeDefaultSplit,
 } from '~/lib/defaultSplit';
 
+const moveDefaultSplitShare = (
+  shares: Record<string, string>,
+  guestUserId: number,
+  targetUserId: number,
+) => {
+  const guestKey = String(guestUserId);
+  const targetKey = String(targetUserId);
+
+  if (!(guestKey in shares)) {
+    return shares;
+  }
+
+  const guestShare = BigInt(shares[guestKey] ?? '0');
+  const targetShare = BigInt(shares[targetKey] ?? '0');
+  const nextShares = { ...shares };
+  const nextTargetShare = targetShare + guestShare;
+
+  delete nextShares[guestKey];
+
+  if (0n === nextTargetShare) {
+    delete nextShares[targetKey];
+  } else {
+    nextShares[targetKey] = nextTargetShare.toString();
+  }
+
+  return nextShares;
+};
+
 export const groupRouter = createTRPCRouter({
   create: protectedProcedure
     .input(z.object({ name: z.string().min(1) }))
@@ -197,6 +225,259 @@ export const groupRouter = createTRPCRouter({
       await ctx.db.groupDefaultSplit.deleteMany({ where: { groupId: input.groupId } });
 
       return groupUsers;
+    }),
+
+  createGuestMember: groupProcedure
+    .input(z.object({ name: z.string().trim().min(1).max(80) }))
+    .mutation(async ({ input, ctx }) => {
+      const guest = await ctx.db.$transaction(async (tx) => {
+        const group = await tx.group.findUnique({
+          where: { id: input.groupId },
+          select: { archivedAt: true },
+        });
+
+        if (!group) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' });
+        }
+
+        if (group.archivedAt) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Cannot add guests to archived groups',
+          });
+        }
+
+        const createdGuest = await tx.user.create({
+          data: {
+            name: input.name,
+            isGuest: true,
+            guestCreatedById: ctx.session.user.id,
+          },
+        });
+
+        await tx.groupUser.create({
+          data: {
+            groupId: input.groupId,
+            userId: createdGuest.id,
+          },
+        });
+
+        await tx.groupDefaultSplit.deleteMany({ where: { groupId: input.groupId } });
+
+        return createdGuest;
+      });
+
+      return guest;
+    }),
+
+  convertGuestMember: groupProcedure
+    .input(z.object({ guestUserId: z.number(), targetUserId: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await ctx.db.$transaction(async (tx) => {
+        const group = await tx.group.findUnique({
+          where: { id: input.groupId },
+          select: { id: true, userId: true, archivedAt: true },
+        });
+
+        if (!group) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' });
+        }
+
+        if (group.userId !== ctx.session.user.id) {
+          throw new TRPCError({
+            code: 'UNAUTHORIZED',
+            message: 'Only group owner can convert guests',
+          });
+        }
+
+        if (group.archivedAt) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Cannot convert guests in archived groups',
+          });
+        }
+
+        if (input.guestUserId === input.targetUserId || group.userId === input.guestUserId) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid guest conversion' });
+        }
+
+        const [guestGroupUser, targetUser, targetGroupUser] = await Promise.all([
+          tx.groupUser.findUnique({
+            where: {
+              groupId_userId: {
+                groupId: input.groupId,
+                userId: input.guestUserId,
+              },
+            },
+            include: { user: true },
+          }),
+          tx.user.findUnique({ where: { id: input.targetUserId } }),
+          tx.groupUser.findUnique({
+            where: {
+              groupId_userId: {
+                groupId: input.groupId,
+                userId: input.targetUserId,
+              },
+            },
+          }),
+        ]);
+
+        if (!guestGroupUser || !guestGroupUser.user.isGuest) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Guest member not found' });
+        }
+
+        if (!targetUser || targetUser.isGuest) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Target user not found' });
+        }
+
+        if (!targetGroupUser) {
+          await tx.groupUser.create({
+            data: {
+              groupId: input.groupId,
+              userId: input.targetUserId,
+            },
+          });
+        }
+
+        const guestParticipants = await tx.expenseParticipant.findMany({
+          where: {
+            userId: input.guestUserId,
+            expense: { groupId: input.groupId },
+          },
+          select: {
+            expenseId: true,
+            amount: true,
+          },
+        });
+        const expenseIds = guestParticipants.map((participant) => participant.expenseId);
+        const targetParticipants = expenseIds.length
+          ? await tx.expenseParticipant.findMany({
+              where: {
+                userId: input.targetUserId,
+                expenseId: { in: expenseIds },
+              },
+              select: {
+                expenseId: true,
+                amount: true,
+              },
+            })
+          : [];
+        const targetParticipantMap = new Map(
+          targetParticipants.map((participant) => [participant.expenseId, participant]),
+        );
+
+        await Promise.all(
+          guestParticipants.map(async (participant) => {
+            const targetParticipant = targetParticipantMap.get(participant.expenseId);
+
+            if (!targetParticipant) {
+              await tx.expenseParticipant.update({
+                where: {
+                  expenseId_userId: {
+                    expenseId: participant.expenseId,
+                    userId: input.guestUserId,
+                  },
+                },
+                data: { userId: input.targetUserId },
+              });
+              return;
+            }
+
+            const nextAmount = targetParticipant.amount + participant.amount;
+
+            if (0n === nextAmount) {
+              await tx.expenseParticipant.delete({
+                where: {
+                  expenseId_userId: {
+                    expenseId: participant.expenseId,
+                    userId: input.targetUserId,
+                  },
+                },
+              });
+            } else {
+              await tx.expenseParticipant.update({
+                where: {
+                  expenseId_userId: {
+                    expenseId: participant.expenseId,
+                    userId: input.targetUserId,
+                  },
+                },
+                data: { amount: nextAmount },
+              });
+            }
+
+            await tx.expenseParticipant.delete({
+              where: {
+                expenseId_userId: {
+                  expenseId: participant.expenseId,
+                  userId: input.guestUserId,
+                },
+              },
+            });
+          }),
+        );
+
+        const [paidBy, addedBy, updatedBy, deletedBy] = await Promise.all([
+          tx.expense.updateMany({
+            where: { groupId: input.groupId, paidBy: input.guestUserId },
+            data: { paidBy: input.targetUserId },
+          }),
+          tx.expense.updateMany({
+            where: { groupId: input.groupId, addedBy: input.guestUserId },
+            data: { addedBy: input.targetUserId },
+          }),
+          tx.expense.updateMany({
+            where: { groupId: input.groupId, updatedBy: input.guestUserId },
+            data: { updatedBy: input.targetUserId },
+          }),
+          tx.expense.updateMany({
+            where: { groupId: input.groupId, deletedBy: input.guestUserId },
+            data: { deletedBy: input.targetUserId },
+          }),
+        ]);
+
+        const groupDefaultSplit = await tx.groupDefaultSplit.findUnique({
+          where: { groupId: input.groupId },
+        });
+
+        if (groupDefaultSplit) {
+          const parsedDefaultSplit = parseSerializedDefaultSplit(
+            groupDefaultSplit.splitType,
+            groupDefaultSplit.shares,
+          );
+
+          if (!parsedDefaultSplit) {
+            await tx.groupDefaultSplit.delete({ where: { groupId: input.groupId } });
+          } else {
+            await tx.groupDefaultSplit.update({
+              where: { groupId: input.groupId },
+              data: {
+                shares: moveDefaultSplitShare(
+                  parsedDefaultSplit.shares,
+                  input.guestUserId,
+                  input.targetUserId,
+                ),
+              },
+            });
+          }
+        }
+
+        await tx.groupUser.delete({
+          where: {
+            groupId_userId: {
+              groupId: input.groupId,
+              userId: input.guestUserId,
+            },
+          },
+        });
+
+        return {
+          participants: guestParticipants.length,
+          expenses: paidBy.count + addedBy.count + updatedBy.count + deletedBy.count,
+        };
+      });
+
+      return result;
     }),
 
   toggleSimplifyDebts: groupProcedure

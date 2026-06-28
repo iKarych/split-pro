@@ -100,6 +100,7 @@
   "actors": {
     "all": "All",
     "friends": "Friends",
+    "guest": "Guest",
     "groups": "Groups",
     "members": "Members",
     "owner": "Owner",
@@ -263,6 +264,14 @@
       "actions": "Actions",
       "archive_group": "Archive group",
       "configure_default_split": "Configure default split",
+      "convert_guest": "Convert guest",
+      "convert_guest_details": {
+        "description": "Move {{guest}}'s history in this group to a real user. Other groups are not affected.",
+        "min_query": "Type at least 2 characters to search users.",
+        "no_results": "No users found",
+        "search_placeholder": "Search by name or email",
+        "title": "Convert guest"
+      },
       "default_split": "Default split",
       "default_balance_currency": "Default balance currency",
       "edit_group": "Edit group",
@@ -311,12 +320,15 @@
       "default_balance_currency_updated": "Default balance currency updated",
       "balances_recalculated": "Balances recalculated successfully",
       "group_archived": "Group archived successfully",
+      "guest_created": "Guest added",
+      "guest_converted": "Guest converted",
       "group_name_updated": "Updated group details"
     },
     "no_members": {
       "add_members": "Add members",
       "add_members_details": {
         "add_to_split_pro": "Add to Split Pro",
+        "create_guest": "Create guest",
         "note": "Note: sending email invites is disabled",
         "placeholder": "Enter name or email",
         "send_invite": "Send invite to user",
