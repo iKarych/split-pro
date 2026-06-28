@@ -277,6 +277,9 @@ export async function sendGroupSimplifyDebtsToggleNotification(
 
 export async function checkRecurrenceNotifications() {
   try {
+    const { reconcileRecurringAutomaticCurrencyConversions } = await import('./splitService');
+    await reconcileRecurringAutomaticCurrencyConversions();
+
     const recurrences = await db.expenseRecurrence.findMany({
       where: {
         NOT: {

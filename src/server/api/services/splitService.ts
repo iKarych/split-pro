@@ -1,4 +1,4 @@
-import { SplitType, type User } from '@prisma/client';
+import { type Prisma, SplitType, type User } from '@prisma/client';
 import { nanoid } from 'nanoid';
 
 import { db } from '~/server/db';
@@ -7,10 +7,11 @@ import { type SplitwiseGroup, type SplitwiseUser } from '~/types';
 import type { CreateExpense } from '~/types/expense.types';
 import { sendExpensePushNotification } from './notificationService';
 import { createRecurringExpenseJob } from './scheduleService';
-import { getCurrencyHelpers } from '~/utils/numbers';
-import { isCurrencyCode } from '~/lib/currency';
+import { currencyConversion, getCurrencyHelpers } from '~/utils/numbers';
+import { type CurrencyCode, isCurrencyCode } from '~/lib/currency';
 import { DEFAULT_CATEGORY } from '~/lib/category';
 import { extractTemplateExpenseId } from '~/lib/cron';
+import { currencyRateProvider } from './currencyRateService';
 
 export async function joinGroup(userId: number, publicGroupId: string) {
   const group = await db.group.findUnique({
@@ -33,6 +34,287 @@ export async function joinGroup(userId: number, publicGroupId: string) {
   return group;
 }
 
+const shouldUseAutomaticCurrencyConversion = (
+  from: string,
+  automaticCurrencyConversion: CreateExpense['automaticCurrencyConversion'],
+): automaticCurrencyConversion is NonNullable<CreateExpense['automaticCurrencyConversion']> =>
+  Boolean(
+    automaticCurrencyConversion &&
+    isCurrencyCode(from) &&
+    isCurrencyCode(automaticCurrencyConversion.to) &&
+    from !== automaticCurrencyConversion.to,
+  );
+
+const normalizeConvertedParticipants = ({
+  from,
+  to,
+  rate,
+  paidBy,
+  participants,
+}: {
+  from: CurrencyCode;
+  to: CurrencyCode;
+  rate: number;
+  paidBy: number;
+  participants: { userId: number; amount: bigint }[];
+}) => {
+  const convertedParticipants = participants.map((participant) => ({
+    userId: participant.userId,
+    amount: currencyConversion({ from, to, amount: participant.amount, rate }),
+  }));
+  const remainder = convertedParticipants.reduce(
+    (sum, participant) => sum + participant.amount,
+    0n,
+  );
+
+  if (0n === remainder) {
+    return convertedParticipants;
+  }
+
+  const balancingParticipant =
+    convertedParticipants.find((participant) => participant.userId === paidBy) ??
+    convertedParticipants[0];
+
+  if (balancingParticipant) {
+    balancingParticipant.amount -= remainder;
+  }
+
+  return convertedParticipants;
+};
+
+const buildAutomaticCurrencyConversionEntries = ({
+  groupId,
+  paidBy,
+  amount,
+  currency,
+  participants,
+  expenseDate,
+  automaticCurrencyConversion,
+}: {
+  groupId: number | null;
+  paidBy: number;
+  amount: bigint;
+  currency: string;
+  participants: { userId: number; amount: bigint }[];
+  expenseDate?: Date;
+  automaticCurrencyConversion: NonNullable<CreateExpense['automaticCurrencyConversion']>;
+}) => {
+  const from = currency as CurrencyCode;
+  const to = automaticCurrencyConversion.to as CurrencyCode;
+  const rate = automaticCurrencyConversion.rate;
+  const name = `${from} → ${to} @ ${rate}`;
+  const convertedAmount = currencyConversion({ from, to, amount, rate });
+
+  return {
+    convertedAmount,
+    sourceOffset: {
+      name,
+      currency: from,
+      amount: -amount,
+      paidBy,
+      splitType: SplitType.CURRENCY_CONVERSION,
+      category: DEFAULT_CATEGORY,
+      groupId,
+      expenseDate,
+      participants: participants.map((participant) => ({
+        userId: participant.userId,
+        amount: -participant.amount,
+      })),
+    },
+    targetAccounting: {
+      name,
+      currency: to,
+      amount: convertedAmount,
+      paidBy,
+      splitType: SplitType.CURRENCY_CONVERSION,
+      category: DEFAULT_CATEGORY,
+      groupId,
+      expenseDate,
+      participants: normalizeConvertedParticipants({
+        from,
+        to,
+        rate,
+        paidBy,
+        participants,
+      }),
+    },
+  };
+};
+
+const createAutomaticCurrencyConversionPair = async (
+  tx: Prisma.TransactionClient,
+  {
+    originalExpenseId,
+    currentUserId,
+    groupId,
+    paidBy,
+    amount,
+    currency,
+    participants,
+    expenseDate,
+    automaticCurrencyConversion,
+  }: {
+    originalExpenseId: string;
+    currentUserId: number;
+    groupId: number | null;
+    paidBy: number;
+    amount: bigint;
+    currency: string;
+    participants: { userId: number; amount: bigint }[];
+    expenseDate?: Date;
+    automaticCurrencyConversion: NonNullable<CreateExpense['automaticCurrencyConversion']>;
+  },
+) => {
+  const { sourceOffset, targetAccounting, convertedAmount } =
+    buildAutomaticCurrencyConversionEntries({
+      groupId,
+      paidBy,
+      amount,
+      currency,
+      participants,
+      expenseDate,
+      automaticCurrencyConversion,
+    });
+  const { participants: targetParticipants, ...targetAccountingData } = targetAccounting;
+  const { participants: sourceOffsetParticipants, ...sourceOffsetData } = sourceOffset;
+
+  const targetExpense = await tx.expense.create({
+    data: {
+      ...targetAccountingData,
+      addedBy: currentUserId,
+      expenseParticipants: {
+        create: getNonZeroParticipants(targetParticipants),
+      },
+    },
+  });
+
+  const sourceOffsetExpense = await tx.expense.create({
+    data: {
+      ...sourceOffsetData,
+      addedBy: currentUserId,
+      conversionToId: targetExpense.id,
+      expenseParticipants: {
+        create: getNonZeroParticipants(sourceOffsetParticipants),
+      },
+    },
+  });
+
+  await tx.expenseAutoCurrencyConversion.create({
+    data: {
+      originalExpenseId,
+      sourceOffsetExpenseId: sourceOffsetExpense.id,
+      targetExpenseId: targetExpense.id,
+      fromCurrency: currency,
+      toCurrency: automaticCurrencyConversion.to,
+      rate: automaticCurrencyConversion.rate,
+      rateDate: automaticCurrencyConversion.rateDate,
+      rateOverridden: automaticCurrencyConversion.rateOverridden,
+      provider: currencyRateProvider.providerName,
+      convertedAmount,
+    },
+  });
+};
+
+const syncAutomaticCurrencyConversion = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    originalExpenseId: string;
+    currentUserId: number;
+    groupId: number | null;
+    paidBy: number;
+    amount: bigint;
+    currency: string;
+    participants: { userId: number; amount: bigint }[];
+    expenseDate?: Date;
+    automaticCurrencyConversion?: CreateExpense['automaticCurrencyConversion'];
+  },
+) => {
+  const existingConversion = await tx.expenseAutoCurrencyConversion.findUnique({
+    where: { originalExpenseId: params.originalExpenseId },
+  });
+
+  if (!shouldUseAutomaticCurrencyConversion(params.currency, params.automaticCurrencyConversion)) {
+    if (!existingConversion) {
+      return;
+    }
+
+    await tx.expenseAutoCurrencyConversion.delete({
+      where: { id: existingConversion.id },
+    });
+    await tx.expense.updateMany({
+      where: {
+        id: { in: [existingConversion.sourceOffsetExpenseId, existingConversion.targetExpenseId] },
+      },
+      data: { deletedAt: new Date(), deletedBy: params.currentUserId },
+    });
+    return;
+  }
+
+  if (!existingConversion) {
+    await createAutomaticCurrencyConversionPair(tx, {
+      ...params,
+      automaticCurrencyConversion: params.automaticCurrencyConversion,
+    });
+    return;
+  }
+
+  const { sourceOffset, targetAccounting, convertedAmount } =
+    buildAutomaticCurrencyConversionEntries({
+      ...params,
+      automaticCurrencyConversion: params.automaticCurrencyConversion,
+    });
+  const { participants: targetParticipants, ...targetAccountingData } = targetAccounting;
+  const { participants: sourceOffsetParticipants, ...sourceOffsetData } = sourceOffset;
+
+  await tx.expenseParticipant.deleteMany({
+    where: {
+      expenseId: {
+        in: [existingConversion.sourceOffsetExpenseId, existingConversion.targetExpenseId],
+      },
+    },
+  });
+
+  await tx.expense.update({
+    where: { id: existingConversion.targetExpenseId },
+    data: {
+      ...targetAccountingData,
+      updatedBy: params.currentUserId,
+      deletedAt: null,
+      deletedBy: null,
+      expenseParticipants: {
+        create: getNonZeroParticipants(targetParticipants),
+      },
+    },
+  });
+
+  await tx.expense.update({
+    where: { id: existingConversion.sourceOffsetExpenseId },
+    data: {
+      ...sourceOffsetData,
+      updatedBy: params.currentUserId,
+      deletedAt: null,
+      deletedBy: null,
+      conversionToId: existingConversion.targetExpenseId,
+      expenseParticipants: {
+        create: getNonZeroParticipants(sourceOffsetParticipants),
+      },
+    },
+  });
+
+  await tx.expenseAutoCurrencyConversion.update({
+    where: { id: existingConversion.id },
+    data: {
+      fromCurrency: params.currency,
+      toCurrency: params.automaticCurrencyConversion.to,
+      rate: params.automaticCurrencyConversion.rate,
+      rateDate: params.automaticCurrencyConversion.rateDate,
+      rateOverridden: params.automaticCurrencyConversion.rateOverridden,
+      provider: currencyRateProvider.providerName,
+      convertedAmount,
+    },
+  });
+};
+
 export async function createExpense(
   {
     groupId,
@@ -47,6 +329,7 @@ export async function createExpense(
     fileKey,
     transactionId,
     cronExpression,
+    automaticCurrencyConversion,
   }: CreateExpense & { cronExpression?: string },
   currentUserId: number,
   conversionFromParams?: CreateExpense,
@@ -83,51 +366,56 @@ export async function createExpense(
     jobId = schedule;
   }
 
-  const operations = [];
+  try {
+    const createdExpense = await db.$transaction(async (tx) => {
+      const expense = await tx.expense.create({
+        data: {
+          ...(expenseId && { id: expenseId }),
+          groupId,
+          paidBy,
+          name,
+          category,
+          amount,
+          splitType,
+          currency,
+          expenseParticipants: {
+            create: nonZeroParticipants,
+          },
+          fileKey,
+          addedBy: currentUserId,
+          expenseDate,
+          transactionId,
+          conversionFrom,
+        },
+      });
 
-  // Create expense operation
-  operations.push(
-    db.expense.create({
-      data: {
-        ...(expenseId && { id: expenseId }),
+      await syncAutomaticCurrencyConversion(tx, {
+        originalExpenseId: expense.id,
+        currentUserId,
         groupId,
         paidBy,
-        name,
-        category,
         amount,
-        splitType,
         currency,
-        expenseParticipants: {
-          create: nonZeroParticipants,
-        },
-        fileKey,
-        addedBy: currentUserId,
+        participants: nonZeroParticipants,
         expenseDate,
-        transactionId,
-        conversionFrom,
-      },
-    }),
-  );
+        automaticCurrencyConversion,
+      });
 
-  // Link recurrence to expense if we created a cron job
-  if (expenseId && jobId) {
-    operations.push(
-      db.expenseRecurrence.create({
-        data: {
-          expense: {
-            connect: { id: expenseId },
+      if (expenseId && jobId) {
+        await tx.expenseRecurrence.create({
+          data: {
+            expense: {
+              connect: { id: expenseId },
+            },
+            job: {
+              connect: { jobid: jobId },
+            },
           },
-          job: {
-            connect: { jobid: jobId },
-          },
-        },
-      }),
-    );
-  }
+        });
+      }
 
-  try {
-    const results = await db.$transaction(operations);
-    const createdExpense = results[0] as Awaited<ReturnType<typeof db.expense.create>>;
+      return expense;
+    });
     if (!createdExpense) {
       throw new Error('Expense creation failed');
     }
@@ -149,6 +437,7 @@ export async function deleteExpense(expenseId: string, deletedBy: number) {
       id: expenseId,
     },
     include: {
+      autoCurrencyConversion: true,
       recurrence: {
         include: {
           job: true,
@@ -176,6 +465,25 @@ export async function deleteExpense(expenseId: string, deletedBy: number) {
       },
     }),
   );
+
+  if (expense.autoCurrencyConversion) {
+    operations.push(
+      db.expense.updateMany({
+        where: {
+          id: {
+            in: [
+              expense.autoCurrencyConversion.sourceOffsetExpenseId,
+              expense.autoCurrencyConversion.targetExpenseId,
+            ],
+          },
+        },
+        data: {
+          deletedBy,
+          deletedAt: new Date(),
+        },
+      }),
+    );
+  }
 
   if (expense.recurrence?.job) {
     const templateId = extractTemplateExpenseId(expense.recurrence.job.command);
@@ -211,6 +519,7 @@ export async function editExpense(
     fileKey,
     transactionId,
     cronExpression,
+    automaticCurrencyConversion,
   }: CreateExpense & { cronExpression?: string },
   currentUserId: number,
   conversionToParams?: CreateExpense,
@@ -241,20 +550,14 @@ export async function editExpense(
     : null;
   const isTemplate = templateId === expenseId;
 
-  const operations = [];
-
-  // Delete existing participants
-  operations.push(
-    db.expenseParticipant.deleteMany({
+  await db.$transaction(async (tx) => {
+    await tx.expenseParticipant.deleteMany({
       where: {
         expenseId: expense.conversionToId ? { in: [expenseId, expense.conversionToId] } : expenseId,
       },
-    }),
-  );
+    });
 
-  // Update expense with new details and create new participants
-  operations.push(
-    db.expense.update({
+    await tx.expense.update({
       where: { id: expenseId },
       data: {
         paidBy,
@@ -271,16 +574,15 @@ export async function editExpense(
         expenseDate,
         updatedBy: currentUserId,
       },
-    }),
-  );
-  if (conversionToParams) {
-    if (!expense.conversionToId) {
-      throw new Error('Conversion to expense not found for editing');
-    }
-    const { participants: toParticipants, ...toExpenseData } = conversionToParams;
+    });
 
-    operations.push(
-      db.expense.update({
+    if (conversionToParams) {
+      if (!expense.conversionToId) {
+        throw new Error('Conversion to expense not found for editing');
+      }
+      const { participants: toParticipants, ...toExpenseData } = conversionToParams;
+
+      await tx.expense.update({
         where: { id: expense.conversionToId },
         data: {
           ...toExpenseData,
@@ -289,35 +591,113 @@ export async function editExpense(
           },
           updatedBy: currentUserId,
         },
-      }),
-    );
-  }
-
-  // Handle recurrence changes only for template expenses
-  if (isTemplate && expense.recurrence?.job) {
-    const currentSchedule = expense.recurrence.job.schedule;
-
-    if (cronExpression && cronExpression !== currentSchedule) {
-      // Schedule changed - update the cron job
-      operations.push(
-        db.$executeRaw`SELECT cron.alter_job(${expense.recurrence.job.jobid}, schedule := ${cronExpression})`,
-      );
-    } else if (!cronExpression) {
-      // Recurrence removed - unschedule and delete recurrence record
-      operations.push(db.$executeRaw`SELECT cron.unschedule(${expense.recurrence.job.jobname})`);
-      operations.push(
-        db.expenseRecurrence.delete({
-          where: { id: expense.recurrence.id },
-        }),
-      );
+      });
     }
-    // If cronExpression === currentSchedule, no action needed
-  }
-  // For derived expenses, cronExpression is ignored entirely
 
-  await db.$transaction(operations);
+    if (!conversionToParams) {
+      await syncAutomaticCurrencyConversion(tx, {
+        originalExpenseId: expenseId,
+        currentUserId,
+        groupId: expense.groupId,
+        paidBy,
+        amount,
+        currency,
+        participants,
+        expenseDate,
+        automaticCurrencyConversion,
+      });
+    }
+
+    if (isTemplate && expense.recurrence?.job) {
+      const currentSchedule = expense.recurrence.job.schedule;
+
+      if (cronExpression && cronExpression !== currentSchedule) {
+        await tx.$executeRaw`SELECT cron.alter_job(${expense.recurrence.job.jobid}, schedule := ${cronExpression})`;
+      } else if (!cronExpression) {
+        await tx.$executeRaw`SELECT cron.unschedule(${expense.recurrence.job.jobname})`;
+        await tx.expenseRecurrence.delete({
+          where: { id: expense.recurrence.id },
+        });
+      }
+    }
+  });
   sendExpensePushNotification(expenseId).catch(console.error);
   return { id: expenseId }; // Return the updated expense
+}
+
+export async function reconcileRecurringAutomaticCurrencyConversions() {
+  const recurrences = await db.expenseRecurrence.findMany({
+    include: {
+      job: true,
+      expense: {
+        where: {
+          deletedAt: null,
+          splitType: { not: SplitType.CURRENCY_CONVERSION },
+        },
+        include: {
+          autoCurrencyConversion: true,
+          expenseParticipants: true,
+        },
+      },
+    },
+  });
+
+  await Promise.all(
+    recurrences.map(async (recurrence) => {
+      const templateId = extractTemplateExpenseId(recurrence.job.command);
+      const template = recurrence.expense.find((expense) => expense.id === templateId);
+
+      if (!template?.autoCurrencyConversion) {
+        return;
+      }
+
+      const targetCurrency = template.autoCurrencyConversion.toCurrency;
+
+      if (!isCurrencyCode(targetCurrency)) {
+        return;
+      }
+
+      const missingConvertedExpenses = recurrence.expense.filter(
+        (expense) => expense.id !== templateId && !expense.autoCurrencyConversion,
+      );
+
+      await Promise.all(
+        missingConvertedExpenses.map(async (expense) => {
+          if (!isCurrencyCode(expense.currency) || expense.currency === targetCurrency) {
+            return;
+          }
+
+          const rate = await currencyRateProvider.getCurrencyRate(
+            expense.currency,
+            targetCurrency,
+            expense.expenseDate,
+          );
+
+          await db.$transaction((tx) =>
+            syncAutomaticCurrencyConversion(tx, {
+              originalExpenseId: expense.id,
+              currentUserId: expense.addedBy,
+              groupId: expense.groupId,
+              paidBy: expense.paidBy,
+              amount: expense.amount,
+              currency: expense.currency,
+              participants: expense.expenseParticipants.map((participant) => ({
+                userId: participant.userId,
+                amount: participant.amount,
+              })),
+              expenseDate: expense.expenseDate,
+              automaticCurrencyConversion: {
+                to: targetCurrency,
+                rate,
+                rateDate: expense.expenseDate,
+                rateOverridden: false,
+              },
+            }),
+          );
+        }),
+      );
+    }),
+  );
 }
 
 export async function getCompleteFriendsDetails(userId: number) {
@@ -330,7 +710,15 @@ export async function getCompleteFriendsDetails(userId: number) {
     },
   });
 
-  const friends = viewBalances.reduce(
+  const friends = viewBalances.reduce< Record<
+      number,
+      {
+        id: number;
+        email?: string | null;
+        name?: string | null;
+        balances: { currency: string; amount: bigint }[];
+      }
+    >>(
     (acc, balance) => {
       const { friendId } = balance;
       acc[friendId] ??= {
@@ -349,15 +737,7 @@ export async function getCompleteFriendsDetails(userId: number) {
 
       return acc;
     },
-    {} as Record<
-      number,
-      {
-        id: number;
-        email?: string | null;
-        name?: string | null;
-        balances: { currency: string; amount: bigint }[];
-      }
-    >,
+    {},
   );
 
   return friends;
@@ -389,7 +769,7 @@ export async function importUserBalanceFromSplitWise(
 
   const users = await createUsersFromSplitwise(splitWiseUsers);
 
-  const userMap = users.reduce(
+  const userMap = users.reduce< Record<string, User>>(
     (acc, user) => {
       if (user.email) {
         acc[user.email] = user;
@@ -397,7 +777,7 @@ export async function importUserBalanceFromSplitWise(
 
       return acc;
     },
-    {} as Record<string, User>,
+    {},
   );
 
   const currencyHelperCache: Record<string, ReturnType<typeof getCurrencyHelpers>['toSafeBigInt']> =
@@ -503,7 +883,7 @@ export async function importGroupFromSplitwise(
 
   const users = await createUsersFromSplitwise(Object.values(splitwiseUserMap));
 
-  const userMap = users.reduce(
+  const userMap = users.reduce< Record<string, User>>(
     (acc, user) => {
       if (user.email) {
         acc[user.email] = user;
@@ -511,7 +891,7 @@ export async function importGroupFromSplitwise(
 
       return acc;
     },
-    {} as Record<string, User>,
+    {},
   );
 
   const missingGroups = await Promise.all(

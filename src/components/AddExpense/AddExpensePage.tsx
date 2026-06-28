@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import React, { useCallback } from 'react';
 
-import { type CurrencyCode } from '~/lib/currency';
+import { type CurrencyCode, isCurrencyCode } from '~/lib/currency';
 import { useAddExpenseStore } from '~/store/addStore';
 import { api } from '~/utils/api';
 
@@ -25,9 +25,10 @@ import { UploadFile } from './UploadFile';
 import { UserInput } from './UserInput';
 import { CurrencyInput } from '../ui/currency-input';
 import { CurrencyConversion } from '../Friend/CurrencyConversion';
-import { currencyConversion } from '~/utils/numbers';
+import { currencyConversion, getRatePrecision } from '~/utils/numbers';
 import { CurrencyConversionIcon } from '../ui/categoryIcons';
 import { useSession } from 'next-auth/react';
+import { Label } from '../ui/label';
 
 export const AddOrEditExpensePage: React.FC<{
   enableSendingInvites: boolean;
@@ -75,6 +76,131 @@ export const AddOrEditExpensePage: React.FC<{
   const addExpenseMutation = api.expense.addOrEditExpense.useMutation();
   const updateProfile = api.user.updateUserDetail.useMutation();
   const { update } = useSession();
+  const editingExpenseQuery = api.expense.getExpenseDetails.useQuery(
+    { expenseId: expenseId ?? '' },
+    { enabled: Boolean(expenseId), refetchOnReconnect: false, refetchOnWindowFocus: false },
+  );
+  const [automaticConversionRate, setAutomaticConversionRate] = React.useState('');
+  const [automaticConversionRateOverridden, setAutomaticConversionRateOverridden] =
+    React.useState(false);
+  const initializedAutomaticConversionExpenseIdRef = React.useRef<string | undefined>(undefined);
+
+  const automaticConversionTargetCurrency = React.useMemo<CurrencyCode | null>(() => {
+    if (group?.defaultCurrency && isCurrencyCode(group.defaultCurrency)) {
+      return group.defaultCurrency;
+    }
+
+    const preferredCurrency = currentUser?.defaultCurrency ?? currentUser?.currency;
+    return preferredCurrency && isCurrencyCode(preferredCurrency) ? preferredCurrency : null;
+  }, [currentUser?.currency, currentUser?.defaultCurrency, group?.defaultCurrency]);
+
+  const automaticConversionEnabled = Boolean(
+    automaticConversionTargetCurrency &&
+    currency !== automaticConversionTargetCurrency &&
+    isCurrencyCode(currency) &&
+    0n !== amount,
+  );
+
+  const automaticConversionRateQuery = api.expense.getCurrencyRate.useQuery(
+    {
+      from: currency,
+      to: automaticConversionTargetCurrency ?? currency,
+      date: expenseDate ?? new Date(),
+    },
+    {
+      enabled: automaticConversionEnabled && !automaticConversionRateOverridden,
+    },
+  );
+
+  const automaticConversionPairRef = React.useRef('');
+
+  React.useEffect(() => {
+    if (
+      !expenseId ||
+      initializedAutomaticConversionExpenseIdRef.current === expenseId ||
+      !editingExpenseQuery.data?.autoCurrencyConversion
+    ) {
+      return;
+    }
+
+    initializedAutomaticConversionExpenseIdRef.current = expenseId;
+    automaticConversionPairRef.current = `${currency}-${automaticConversionTargetCurrency ?? ''}`;
+    const { rate, rateOverridden } = editingExpenseQuery.data.autoCurrencyConversion;
+    const precision = getRatePrecision(rate);
+    setAutomaticConversionRate(rate.toFixed(precision));
+    setAutomaticConversionRateOverridden(rateOverridden);
+  }, [
+    automaticConversionTargetCurrency,
+    currency,
+    editingExpenseQuery.data?.autoCurrencyConversion,
+    expenseId,
+  ]);
+
+  React.useEffect(() => {
+    const pairKey = `${currency}-${automaticConversionTargetCurrency ?? ''}`;
+    if (automaticConversionPairRef.current === pairKey) {
+      return;
+    }
+
+    automaticConversionPairRef.current = pairKey;
+    setAutomaticConversionRate('');
+    setAutomaticConversionRateOverridden(false);
+  }, [automaticConversionTargetCurrency, currency]);
+
+  React.useEffect(() => {
+    if (!automaticConversionEnabled || automaticConversionRateOverridden) {
+      return;
+    }
+
+    if (automaticConversionRateQuery.isPending) {
+      setAutomaticConversionRate('');
+      return;
+    }
+
+    if (automaticConversionRateQuery.data?.rate) {
+      const precision = getRatePrecision(automaticConversionRateQuery.data.rate);
+      setAutomaticConversionRate(automaticConversionRateQuery.data.rate.toFixed(precision));
+    }
+  }, [
+    automaticConversionEnabled,
+    automaticConversionRateOverridden,
+    automaticConversionRateQuery.data?.rate,
+    automaticConversionRateQuery.isPending,
+  ]);
+
+  const automaticConversionRateNumber = Number(automaticConversionRate);
+  const automaticConversionBlocked =
+    automaticConversionEnabled &&
+    (automaticConversionRateQuery.isPending ||
+      !automaticConversionRate ||
+      Number.isNaN(automaticConversionRateNumber) ||
+      automaticConversionRateNumber <= 0);
+
+  const automaticConvertedAmount = React.useMemo(() => {
+    if (
+      !automaticConversionEnabled ||
+      !automaticConversionTargetCurrency ||
+      !automaticConversionRate ||
+      Number.isNaN(automaticConversionRateNumber) ||
+      automaticConversionRateNumber <= 0
+    ) {
+      return null;
+    }
+
+    return currencyConversion({
+      from: currency,
+      to: automaticConversionTargetCurrency,
+      amount,
+      rate: automaticConversionRateNumber,
+    });
+  }, [
+    amount,
+    automaticConversionEnabled,
+    automaticConversionRate,
+    automaticConversionRateNumber,
+    automaticConversionTargetCurrency,
+    currency,
+  ]);
 
   const onCurrencyPick = useCallback(
     (newCurrency: CurrencyCode | null) => {
@@ -105,6 +231,37 @@ export const AddOrEditExpensePage: React.FC<{
     [setAmount, setAmountStr],
   );
 
+  const onChangeAutomaticConversionRate = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const raw = event.target.value.replace(',', '.');
+      if ('' === raw) {
+        setAutomaticConversionRate('');
+        setAutomaticConversionRateOverridden(true);
+        return;
+      }
+
+      if (!/^[0-9]*\.?[0-9]*$/.test(raw)) {
+        return;
+      }
+
+      const [integerPart = '', decimalPart = ''] = raw.split('.');
+      const trimmedDecimalPart = decimalPart.slice(0, 10);
+      setAutomaticConversionRate(
+        raw.includes('.') ? `${integerPart}.${trimmedDecimalPart}` : integerPart,
+      );
+      setAutomaticConversionRateOverridden(true);
+    },
+    [],
+  );
+
+  const resetAutomaticConversionRate = useCallback(() => {
+    setAutomaticConversionRateOverridden(false);
+    if (automaticConversionRateQuery.data?.rate) {
+      const precision = getRatePrecision(automaticConversionRateQuery.data.rate);
+      setAutomaticConversionRate(automaticConversionRateQuery.data.rate.toFixed(precision));
+    }
+  }, [automaticConversionRateQuery.data?.rate]);
+
   const addExpense = useCallback(async () => {
     if (!paidBy) {
       return;
@@ -112,6 +269,11 @@ export const AddOrEditExpensePage: React.FC<{
 
     if (!isExpenseSettled) {
       setSplitScreenOpen(true);
+      return;
+    }
+
+    if (automaticConversionBlocked) {
+      toast.error(t('errors.currency_conversion_failed'));
       return;
     }
 
@@ -140,6 +302,15 @@ export const AddOrEditExpensePage: React.FC<{
             expenseId,
             transactionId,
             cronExpression: cronExpression ? cronToBackend(cronExpression) : undefined,
+            automaticCurrencyConversion:
+              automaticConversionEnabled && automaticConversionTargetCurrency
+                ? {
+                    to: automaticConversionTargetCurrency,
+                    rate: automaticConversionRateNumber,
+                    rateDate: expenseDate,
+                    rateOverridden: automaticConversionRateOverridden,
+                  }
+                : undefined,
           },
         ],
         {
@@ -217,6 +388,12 @@ export const AddOrEditExpensePage: React.FC<{
     multipleTransactions,
     setSingleTransaction,
     update,
+    automaticConversionBlocked,
+    automaticConversionEnabled,
+    automaticConversionRateNumber,
+    automaticConversionRateOverridden,
+    automaticConversionTargetCurrency,
+    t,
   ]);
 
   const handleDescriptionChange = useCallback(
@@ -295,7 +472,11 @@ export const AddOrEditExpensePage: React.FC<{
           variant="ghost"
           className="text-primary px-0"
           disabled={
-            addExpenseMutation.isPending || !amount || '' === description || isFileUploading
+            addExpenseMutation.isPending ||
+            !amount ||
+            '' === description ||
+            isFileUploading ||
+            automaticConversionBlocked
           }
           onClick={addExpense}
         >
@@ -329,6 +510,63 @@ export const AddOrEditExpensePage: React.FC<{
               rightIcon={currencyConversionComponent}
             />
           </div>
+          {automaticConversionEnabled && automaticConversionTargetCurrency ? (
+            <div className="rounded-md border px-3 py-2 text-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="flex flex-1 flex-col gap-1">
+                  <Label>{t('currency_conversion.automatic_rate')}</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      aria-label={t('currency_conversion.rate')}
+                      type="number"
+                      min={0}
+                      value={automaticConversionRate}
+                      inputMode="decimal"
+                      onChange={onChangeAutomaticConversionRate}
+                      disabled={
+                        automaticConversionRateQuery.isPending && !automaticConversionRateOverridden
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-9 shrink-0"
+                      disabled={
+                        automaticConversionRateQuery.isPending ||
+                        !automaticConversionRateQuery.data?.rate ||
+                        !automaticConversionRateOverridden
+                      }
+                      onClick={resetAutomaticConversionRate}
+                    >
+                      <RefreshCcwDot className="size-4" />
+                      <span className="sr-only">{t('currency_conversion.reset_rate')}</span>
+                    </Button>
+                  </div>
+                </div>
+                <div className="text-muted-foreground flex flex-col gap-1 sm:min-w-44">
+                  <span>
+                    1 {currency} = {automaticConversionRate || '-'}{' '}
+                    {automaticConversionTargetCurrency}
+                  </span>
+                  {automaticConversionRateQuery.isPending && !automaticConversionRateOverridden ? (
+                    <span>{t('currency_conversion.fetching_rate')}</span>
+                  ) : null}
+                  {automaticConvertedAmount !== null ? (
+                    <span>
+                      {t('currency_conversion.converted_amount')}:{' '}
+                      {getCurrencyHelpersCached(automaticConversionTargetCurrency).toUIString(
+                        automaticConvertedAmount,
+                      )}
+                    </span>
+                  ) : null}
+                  {automaticConversionRateOverridden ? (
+                    <span>{t('currency_conversion.manual_override')}</span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
           <div className="h-[180px]">
             {amount && '' !== description ? (
               <>
@@ -376,7 +614,8 @@ export const AddOrEditExpensePage: React.FC<{
                         !amount ||
                         '' === description ||
                         isFileUploading ||
-                        !isExpenseSettled
+                        !isExpenseSettled ||
+                        automaticConversionBlocked
                       }
                       onClick={addExpense}
                     >

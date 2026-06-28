@@ -170,38 +170,63 @@ model GroupBalance {
 }
 
 model Expense {
-  paidBy              Int
-  addedBy             Int
-  name                String
-  category            String
-  amount              BigInt
-  splitType           SplitType            @default(EQUAL)
-  expenseDate         DateTime             @default(now())
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  currency            String
-  fileKey             String?
-  groupId             Int?
-  deletedAt           DateTime?
-  deletedBy           Int?
-  updatedBy           Int?
-  transactionId       String?
-  recurrenceId        Int?
-  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  conversionToId      String?              @unique @db.Uuid
-  addedByUser         User                 @relation("AddedByUser", fields: [addedBy], references: [id], onDelete: Cascade)
-  deletedByUser       User?                @relation("DeletedByUser", fields: [deletedBy], references: [id], onDelete: Cascade)
-  group               Group?               @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  conversionTo        Expense?             @relation("CurrencyConversion", fields: [conversionToId], references: [id], onDelete: Cascade)
-  conversionFrom      Expense?             @relation("CurrencyConversion")
-  paidByUser          User                 @relation("PaidByUser", fields: [paidBy], references: [id], onDelete: Cascade)
-  recurrence          ExpenseRecurrence?   @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
-  updatedByUser       User?                @relation("UpdatedByUser", fields: [updatedBy], references: [id])
-  expenseNotes        ExpenseNote[]
-  expenseParticipants ExpenseParticipant[]
+  paidBy                             Int
+  addedBy                            Int
+  name                               String
+  category                           String
+  amount                             BigInt
+  splitType                          SplitType                      @default(EQUAL)
+  expenseDate                        DateTime                       @default(now())
+  createdAt                          DateTime                       @default(now())
+  updatedAt                          DateTime                       @updatedAt
+  currency                           String
+  fileKey                            String?
+  groupId                            Int?
+  deletedAt                          DateTime?
+  deletedBy                          Int?
+  updatedBy                          Int?
+  transactionId                      String?
+  recurrenceId                       Int?
+  id                                 String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversionToId                     String?                        @unique @db.Uuid
+  addedByUser                        User                           @relation("AddedByUser", fields: [addedBy], references: [id], onDelete: Cascade)
+  deletedByUser                      User?                          @relation("DeletedByUser", fields: [deletedBy], references: [id], onDelete: Cascade)
+  group                              Group?                         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  conversionTo                       Expense?                       @relation("CurrencyConversion", fields: [conversionToId], references: [id], onDelete: Cascade)
+  conversionFrom                     Expense?                       @relation("CurrencyConversion")
+  autoCurrencyConversion             ExpenseAutoCurrencyConversion? @relation("AutoCurrencyConversionOriginal")
+  autoCurrencyConversionSourceOffset ExpenseAutoCurrencyConversion? @relation("AutoCurrencyConversionSourceOffset")
+  autoCurrencyConversionTarget       ExpenseAutoCurrencyConversion? @relation("AutoCurrencyConversionTarget")
+  paidByUser                         User                           @relation("PaidByUser", fields: [paidBy], references: [id], onDelete: Cascade)
+  recurrence                         ExpenseRecurrence?             @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
+  updatedByUser                      User?                          @relation("UpdatedByUser", fields: [updatedBy], references: [id])
+  expenseNotes                       ExpenseNote[]
+  expenseParticipants                ExpenseParticipant[]
 
   @@index([groupId])
   @@index([paidBy])
+  @@schema("public")
+}
+
+model ExpenseAutoCurrencyConversion {
+  id                    Int      @id @default(autoincrement())
+  originalExpenseId     String   @unique @db.Uuid
+  sourceOffsetExpenseId String   @unique @db.Uuid
+  targetExpenseId       String   @unique @db.Uuid
+  fromCurrency          String
+  toCurrency            String
+  rate                  Float
+  rateDate              DateTime
+  rateOverridden        Boolean  @default(false)
+  provider              String?
+  convertedAmount       BigInt
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  originalExpense     Expense @relation("AutoCurrencyConversionOriginal", fields: [originalExpenseId], references: [id], onDelete: Cascade)
+  sourceOffsetExpense Expense @relation("AutoCurrencyConversionSourceOffset", fields: [sourceOffsetExpenseId], references: [id], onDelete: Cascade)
+  targetExpense       Expense @relation("AutoCurrencyConversionTarget", fields: [targetExpenseId], references: [id], onDelete: Cascade)
+
   @@schema("public")
 }
 

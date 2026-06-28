@@ -28,8 +28,23 @@ export type CreateExpense = Omit<
   fileKey?: string;
   expenseId?: string;
   transactionId?: string;
+  automaticCurrencyConversion?: AutomaticCurrencyConversionInput;
   participants: Omit<ExpenseParticipant, 'expenseId'>[];
 };
+
+export interface AutomaticCurrencyConversionInput {
+  to: string;
+  rate: number;
+  rateDate: Date;
+  rateOverridden: boolean;
+}
+
+export const automaticCurrencyConversionSchema = z.object({
+  to: z.string(),
+  rate: z.number().positive(),
+  rateDate: z.date(),
+  rateOverridden: z.boolean(),
+});
 
 export const createExpenseSchema = z.object({
   paidBy: z.number(),
@@ -54,6 +69,7 @@ export const createExpenseSchema = z.object({
   expenseId: z.string().optional(),
   conversionToId: z.string().optional(),
   cronExpression: z.string().optional(),
+  automaticCurrencyConversion: automaticCurrencyConversionSchema.optional(),
 }) satisfies z.ZodType<CreateExpense>;
 
 export const createCurrencyConversionSchema = z.object({

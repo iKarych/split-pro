@@ -73,6 +73,15 @@ const ExpenseDetails: React.FC<ExpenseDetailsProps> = ({ user, expense }) => {
               {expense.transactionId && <Landmark className="text-positive h-4 w-4" />}
             </div>
             <p className="text-2xl font-semibold">{toUIString(expense.amount)}</p>
+            {expense.autoCurrencyConversion ? (
+              <p className="text-sm text-gray-500">
+                {t('currency_conversion.converted_amount')}:{' '}
+                {getCurrencyHelpersCached(expense.autoCurrencyConversion.toCurrency).toUIString(
+                  expense.autoCurrencyConversion.convertedAmount,
+                )}{' '}
+                @ {expense.autoCurrencyConversion.rate}
+              </p>
+            ) : null}
             {shouldShowExpenseDate ? (
               <p className="text-sm text-gray-500">
                 {toUIDate(expense.expenseDate, { year: true })}

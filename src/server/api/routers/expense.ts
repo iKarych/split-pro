@@ -140,6 +140,12 @@ export const expenseRouter = createTRPCRouter({
         if (input.splitType === SplitType.CURRENCY_CONVERSION) {
           throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid split type' });
         }
+        if (
+          input.automaticCurrencyConversion &&
+          (!isCurrencyCode(input.currency) || !isCurrencyCode(input.automaticCurrencyConversion.to))
+        ) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid currency code' });
+        }
 
         if (input.groupId !== null) {
           const group = await db.group.findUnique({
@@ -281,6 +287,12 @@ export const expenseRouter = createTRPCRouter({
                 },
               ],
             },
+            {
+              autoCurrencyConversionSourceOffset: null,
+            },
+            {
+              autoCurrencyConversionTarget: null,
+            },
           ],
         },
         orderBy: {
@@ -321,6 +333,8 @@ export const expenseRouter = createTRPCRouter({
         where: {
           groupId: input.groupId,
           deletedBy: null,
+          autoCurrencyConversionSourceOffset: null,
+          autoCurrencyConversionTarget: null,
           OR: [
             {
               NOT: {
@@ -386,6 +400,7 @@ export const expenseRouter = createTRPCRouter({
               },
             },
           },
+          autoCurrencyConversion: true,
         },
       });
 
@@ -428,6 +443,10 @@ export const expenseRouter = createTRPCRouter({
     const expenses = await db.expenseParticipant.findMany({
       where: {
         userId: ctx.session.user.id,
+        expense: {
+          autoCurrencyConversionSourceOffset: null,
+          autoCurrencyConversionTarget: null,
+        },
       },
       orderBy: {
         expense: {

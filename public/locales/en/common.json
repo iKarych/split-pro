@@ -121,10 +121,14 @@
   },
   "currency_conversion": {
     "amount_to_receive": "Amount to receive",
+    "automatic_rate": "Automatic conversion rate",
+    "converted_amount": "Converted amount",
     "description": "Convert the amount to a different currency.",
     "exchange_rate": "Exchange rate",
     "fetching_rate": "Fetching rate...",
+    "manual_override": "Manual rate override",
     "rate": "Rate",
+    "reset_rate": "Reset rate",
     "success_toast": "Currency conversion set successfully",
     "title": "Currency conversion"
   },
