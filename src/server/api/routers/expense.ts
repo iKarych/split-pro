@@ -147,18 +147,14 @@ export const expenseRouter = createTRPCRouter({
           throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid currency code' });
         }
 
-        if (input.groupId !== null) {
-          const group = await db.group.findUnique({
-            where: { id: input.groupId },
-            select: { archivedAt: true },
-          });
-          if (!group) {
-            throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
-          }
-          if (group.archivedAt) {
-            throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
-          }
-        }
+        await validateExpenseTargetGroup({
+          groupId: input.groupId,
+          userId: ctx.session.user.id,
+          participantIds: [
+            input.paidBy,
+            ...input.participants.map((participant) => participant.userId),
+          ],
+        });
 
         try {
           const expense = input.expenseId
@@ -176,6 +172,106 @@ export const expenseRouter = createTRPCRouter({
       }
 
       return results;
+    }),
+
+  moveExpensesToGroup: protectedProcedure
+    .input(
+      z.object({
+        expenseIds: z.array(z.string()).min(1),
+        targetGroupId: z.number().nullable(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const expenseIds = [...new Set(input.expenseIds)];
+
+      await Promise.all(
+        expenseIds.map((expenseId) =>
+          validateEditExpensePermission(expenseId, ctx.session.user.id),
+        ),
+      );
+
+      const expenses = await db.expense.findMany({
+        where: {
+          id: { in: expenseIds },
+          deletedAt: null,
+        },
+        include: {
+          expenseParticipants: {
+            select: {
+              userId: true,
+            },
+          },
+          conversionTo: {
+            select: {
+              id: true,
+            },
+          },
+          conversionFrom: {
+            select: {
+              id: true,
+            },
+          },
+          autoCurrencyConversion: {
+            select: {
+              sourceOffsetExpenseId: true,
+              targetExpenseId: true,
+            },
+          },
+          autoCurrencyConversionSourceOffset: {
+            select: {
+              originalExpenseId: true,
+              targetExpenseId: true,
+            },
+          },
+          autoCurrencyConversionTarget: {
+            select: {
+              originalExpenseId: true,
+              sourceOffsetExpenseId: true,
+            },
+          },
+        },
+      });
+
+      if (expenses.length !== expenseIds.length) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Expense not found' });
+      }
+
+      await validateExpenseTargetGroup({
+        groupId: input.targetGroupId,
+        userId: ctx.session.user.id,
+        participantIds: expenses.flatMap((expense) => [
+          expense.paidBy,
+          ...expense.expenseParticipants.map((participant) => participant.userId),
+        ]),
+      });
+
+      const linkedExpenseIds = [
+        ...new Set(
+          expenses.flatMap((expense) => [
+            expense.id,
+            expense.conversionTo?.id,
+            expense.conversionFrom?.id,
+            expense.autoCurrencyConversion?.sourceOffsetExpenseId,
+            expense.autoCurrencyConversion?.targetExpenseId,
+            expense.autoCurrencyConversionSourceOffset?.originalExpenseId,
+            expense.autoCurrencyConversionSourceOffset?.targetExpenseId,
+            expense.autoCurrencyConversionTarget?.originalExpenseId,
+            expense.autoCurrencyConversionTarget?.sourceOffsetExpenseId,
+          ]),
+        ),
+      ].filter((expenseId): expenseId is string => Boolean(expenseId));
+
+      await db.expense.updateMany({
+        where: {
+          id: { in: linkedExpenseIds },
+        },
+        data: {
+          groupId: input.targetGroupId,
+          updatedBy: ctx.session.user.id,
+        },
+      });
+
+      return { updatedCount: expenseIds.length };
     }),
 
   addOrEditCurrencyConversion: protectedProcedure
@@ -356,6 +452,13 @@ export const expenseRouter = createTRPCRouter({
           paidByUser: true,
           deletedByUser: true,
           conversionTo: true,
+          group: {
+            select: {
+              id: true,
+              name: true,
+              simplifyDebts: true,
+            },
+          },
         },
       });
 
@@ -584,20 +687,54 @@ export const expenseRouter = createTRPCRouter({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Expense not found' });
       }
 
-      if (expense.groupId !== null) {
-        const group = await db.group.findUnique({
-          where: { id: expense.groupId },
-          select: { archivedAt: true },
-        });
-        if (!group) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
-        }
-        if (group.archivedAt) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
-        }
+      if (null !== expense.groupId) {
+        await validateGroupCanBeChanged(expense.groupId);
       }
 
       await deleteExpense(input.expenseId, ctx.session.user.id);
+    }),
+
+  deleteExpenses: protectedProcedure
+    .input(z.object({ expenseIds: z.array(z.string()).min(1) }))
+    .mutation(async ({ input, ctx }) => {
+      const expenseIds = [...new Set(input.expenseIds)];
+
+      await Promise.all(
+        expenseIds.map((expenseId) =>
+          validateEditExpensePermission(expenseId, ctx.session.user.id),
+        ),
+      );
+
+      const expenses = await db.expense.findMany({
+        where: {
+          id: { in: expenseIds },
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          groupId: true,
+        },
+      });
+
+      if (expenses.length !== expenseIds.length) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Expense not found' });
+      }
+
+      const groupIds = [
+        ...new Set(
+          expenses
+            .map((expense) => expense.groupId)
+            .filter((groupId): groupId is number => null !== groupId),
+        ),
+      ];
+
+      await Promise.all(groupIds.map((groupId) => validateGroupCanBeChanged(groupId)));
+
+      await Promise.all(
+        expenseIds.map((expenseId) => deleteExpense(expenseId, ctx.session.user.id)),
+      );
+
+      return { deletedCount: expenseIds.length };
     }),
 
   getCurrencyRate: protectedProcedure.input(getCurrencyRateSchema).query(async ({ input }) => {
@@ -658,11 +795,78 @@ const validateEditExpensePermission = async (expenseId: string, userId: number):
     db.expense.findUnique({ where: { id: expenseId }, select: { addedBy: true } }),
   ]);
 
-  if (!expenseParticipant && !addedBy?.addedBy) {
+  if (!expenseParticipant && addedBy?.addedBy !== userId) {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'You are not the participant of the expense',
     });
+  }
+};
+
+const validateExpenseTargetGroup = async ({
+  groupId,
+  userId,
+  participantIds,
+}: {
+  groupId: number | null;
+  userId: number;
+  participantIds: number[];
+}) => {
+  if (null === groupId) {
+    return;
+  }
+
+  const group = await db.group.findUnique({
+    where: { id: groupId },
+    select: {
+      archivedAt: true,
+      groupUsers: {
+        select: {
+          userId: true,
+        },
+      },
+    },
+  });
+
+  if (!group) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
+  }
+
+  if (group.archivedAt) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
+  }
+
+  const groupMemberIds = new Set(group.groupUsers.map((groupUser) => groupUser.userId));
+
+  if (!groupMemberIds.has(userId)) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a group member' });
+  }
+
+  const uniqueParticipantIds = [...new Set(participantIds)];
+  const hasOutsideParticipant = uniqueParticipantIds.some(
+    (participantId) => !groupMemberIds.has(participantId),
+  );
+
+  if (hasOutsideParticipant) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Some participants are not group members',
+    });
+  }
+};
+
+const validateGroupCanBeChanged = async (groupId: number) => {
+  const group = await db.group.findUnique({
+    where: { id: groupId },
+    select: { archivedAt: true },
+  });
+
+  if (!group) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
+  }
+
+  if (group.archivedAt) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
   }
 };
 

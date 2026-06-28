@@ -127,9 +127,12 @@
     "exchange_rate": "Exchange rate",
     "fetching_rate": "Fetching rate...",
     "manual_override": "Manual rate override",
+    "no_conversion_needed": "No conversion needed",
     "rate": "Rate",
     "reset_rate": "Reset rate",
+    "reset_target": "Reset target currency",
     "success_toast": "Currency conversion set successfully",
+    "target_currency": "Target currency",
     "title": "Currency conversion"
   },
   "errors": {
@@ -241,6 +244,19 @@
     "delete_expense_details": {
       "text": "This action cannot be undone. This will permanently delete your expense.",
       "title": "Are you absolutely sure?"
+    },
+    "group_label": "In {{groupName}}",
+    "bulk_edit": {
+      "delete": "Delete",
+      "delete_description": "This will delete {{count}} selected transaction(s). This action cannot be undone.",
+      "delete_success": "Transactions deleted",
+      "delete_title": "Delete transactions?",
+      "move": "Move",
+      "move_description": "Choose where to move {{count}} selected transaction(s).",
+      "move_success": "Transactions moved",
+      "move_title": "Move transactions",
+      "no_group": "No group",
+      "selected_count": "{{count}} selected"
     },
     "multiple_transactions": {
       "title": "Add multiple transactions",

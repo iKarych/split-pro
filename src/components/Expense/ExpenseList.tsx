@@ -10,6 +10,7 @@ import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import { cn } from '~/lib/utils';
 import type { ExpenseRouter } from '~/server/api/routers/expense';
 import { api } from '~/utils/api';
+import { Checkbox } from '../ui/checkbox';
 import { Separator } from '../ui/separator';
 
 type ExpensesOutput =
@@ -21,6 +22,7 @@ type SingleExpenseOutput = ExpensesOutput[number];
 type ExpenseComponent = React.FC<{
   e: SingleExpenseOutput;
   userId: number;
+  showGroupLabel?: boolean;
 }>;
 
 export const ExpenseList: React.FC<{
@@ -29,14 +31,27 @@ export const ExpenseList: React.FC<{
   contactId: number;
   isGroup?: boolean;
   isLoading?: boolean;
-}> = ({ userId, isGroup = false, expenses = [], contactId, isLoading }) => {
+  selectedExpenseIds?: Set<string>;
+  onExpenseSelectionChange?: (expenseId: string, selected: boolean) => void;
+}> = ({
+  userId,
+  isGroup = false,
+  expenses = [],
+  contactId,
+  isLoading,
+  selectedExpenseIds,
+  onExpenseSelectionChange,
+}) => {
+  const { i18n } = useTranslationWithUtils();
+
   if (!isLoading && expenses.length === 0) {
     return <NoExpenses />;
   }
 
-  const { i18n } = useTranslationWithUtils();
-
   let lastDate: Date | null = null;
+  const canSelect = Boolean(onExpenseSelectionChange);
+  const hasSelection = Boolean(selectedExpenseIds?.size);
+  const showGroupLabel = !isGroup;
 
   return (
     <div className="flex flex-col gap-3">
@@ -56,6 +71,18 @@ export const ExpenseList: React.FC<{
 
         const isSettlement = e.splitType === SplitType.SETTLEMENT;
         const isCurrencyConversion = e.splitType === SplitType.CURRENCY_CONVERSION;
+        const isSelected = selectedExpenseIds?.has(e.id) ?? false;
+        const onSelectionChange = (checked: boolean | 'indeterminate') => {
+          onExpenseSelectionChange?.(e.id, true === checked);
+        };
+        const onExpenseClick: React.MouseEventHandler<HTMLAnchorElement> = (event) => {
+          if (!hasSelection) {
+            return;
+          }
+
+          event.preventDefault();
+          onExpenseSelectionChange?.(e.id, !isSelected);
+        };
 
         return (
           <React.Fragment key={e.id}>
@@ -70,14 +97,45 @@ export const ExpenseList: React.FC<{
                 <Separator className="flex-1 bg-gray-800" />
               </div>
             )}
-            <Link
-              href={`/${isGroup ? 'groups' : 'balances'}/${contactId}/expenses/${e.id}`}
-              className={cn('flex items-center justify-between', isFirstOfMonth ? 'pb-2' : 'py-2')}
+            <div
+              className={cn(
+                'group flex items-center gap-2',
+                isFirstOfMonth ? 'pb-2' : 'py-2',
+                isSelected && 'bg-accent/40 rounded-md px-2',
+              )}
             >
-              {isSettlement && <Settlement e={e} userId={userId} />}
-              {isCurrencyConversion && <CurrencyConversion e={e} userId={userId} />}
-              {!isSettlement && !isCurrencyConversion && <Expense e={e} userId={userId} />}
-            </Link>
+              {canSelect ? (
+                <div
+                  className={cn(
+                    'flex w-6 shrink-0 justify-center transition-opacity',
+                    hasSelection || isSelected
+                      ? 'opacity-100'
+                      : 'lg:opacity-0 lg:group-hover:opacity-100',
+                  )}
+                >
+                  <Checkbox
+                    checked={isSelected}
+                    onCheckedChange={onSelectionChange}
+                    className="h-5 w-5 lg:h-4 lg:w-4"
+                  />
+                </div>
+              ) : null}
+              <Link
+                href={`/${isGroup ? 'groups' : 'balances'}/${contactId}/expenses/${e.id}`}
+                className="flex min-w-0 flex-1 items-center justify-between"
+                onClick={onExpenseClick}
+              >
+                {isSettlement && (
+                  <Settlement e={e} userId={userId} showGroupLabel={showGroupLabel} />
+                )}
+                {isCurrencyConversion && (
+                  <CurrencyConversion e={e} userId={userId} showGroupLabel={showGroupLabel} />
+                )}
+                {!isSettlement && !isCurrencyConversion && (
+                  <Expense e={e} userId={userId} showGroupLabel={showGroupLabel} />
+                )}
+              </Link>
+            </div>
           </React.Fragment>
         );
       })}
@@ -85,7 +143,7 @@ export const ExpenseList: React.FC<{
   );
 };
 
-const Expense: ExpenseComponent = ({ e, userId }) => {
+const Expense: ExpenseComponent = ({ e, userId, showGroupLabel }) => {
   const { displayName, toUIDate, t, getCurrencyHelpersCached } = useTranslationWithUtils();
   const router = useRouter();
   const { friendId } = router.query;
@@ -110,6 +168,7 @@ const Expense: ExpenseComponent = ({ e, userId }) => {
         <CategoryIcon category={e.category} className="size-5 shrink-0 text-gray-400" />
         <div className="min-w-0 pe-1">
           <p className="truncate text-sm lg:text-base">{e.name}</p>
+          <ExpenseGroupLabel expense={e} show={showGroupLabel} />
           <p className="truncate text-xs text-gray-500">
             {displayName(e.paidByUser, userId)}{' '}
             {t(`ui.expense.user.${e.amount < 0n ? 'received' : 'paid'}`)} {toUIString(e.amount)}
@@ -138,7 +197,7 @@ const Expense: ExpenseComponent = ({ e, userId }) => {
   );
 };
 
-const Settlement: ExpenseComponent = ({ e, userId }) => {
+const Settlement: ExpenseComponent = ({ e, userId, showGroupLabel }) => {
   const { displayName, toUIDate, t, getCurrencyHelpersCached } = useTranslationWithUtils();
 
   const { toUIString } = getCurrencyHelpersCached(e.currency);
@@ -153,6 +212,7 @@ const Settlement: ExpenseComponent = ({ e, userId }) => {
       </div>
       <SettleupIcon className="size-5 shrink-0 text-gray-400" />
       <div className="min-w-0">
+        <ExpenseGroupLabel expense={e} show={showGroupLabel} />
         <p className="line-clamp-2 text-sm text-gray-400">
           {displayName(e.paidByUser, userId)}{' '}
           {t(`ui.expense.user.${e.amount < 0n ? 'received' : 'paid'}`)} {toUIString(e.amount)}{' '}
@@ -163,7 +223,7 @@ const Settlement: ExpenseComponent = ({ e, userId }) => {
   );
 };
 
-const CurrencyConversion: ExpenseComponent = ({ e, userId }) => {
+const CurrencyConversion: ExpenseComponent = ({ e, userId, showGroupLabel }) => {
   const { displayName, toUIDate, t, getCurrencyHelpersCached } = useTranslationWithUtils();
 
   if (!e.conversionTo) {
@@ -184,6 +244,7 @@ const CurrencyConversion: ExpenseComponent = ({ e, userId }) => {
       </div>
       <CurrencyConversionIcon className="size-5 shrink-0 text-gray-400" />
       <div className="min-w-0">
+        <ExpenseGroupLabel expense={e} show={showGroupLabel} />
         <p className="truncate text-sm lg:text-base">
           {getCurrencyHelpersCached(e.currency).toUIString(e.amount)} ➡️{' '}
           {
@@ -197,6 +258,23 @@ const CurrencyConversion: ExpenseComponent = ({ e, userId }) => {
         </p>
       </div>
     </div>
+  );
+};
+
+const ExpenseGroupLabel: React.FC<{ expense: SingleExpenseOutput; show?: boolean }> = ({
+  expense,
+  show,
+}) => {
+  const { t } = useTranslationWithUtils();
+
+  if (!show || !expense.group) {
+    return null;
+  }
+
+  return (
+    <p className="text-primary truncate text-xs">
+      {t('expense_details.group_label', { groupName: expense.group.name })}
+    </p>
   );
 };
 

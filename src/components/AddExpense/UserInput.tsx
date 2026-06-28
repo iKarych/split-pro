@@ -7,9 +7,7 @@ import { api } from '~/utils/api';
 
 import { EntityAvatar } from '../ui/avatar';
 
-export const UserInput: React.FC<{
-  isEditing?: boolean;
-}> = ({ isEditing }) => {
+export const UserInput: React.FC = () => {
   const { t } = useTranslation();
   const {
     setNameOrEmail,
@@ -97,20 +95,17 @@ export const UserInput: React.FC<{
       <input
         type="email"
         placeholder={
-          isEditing && Boolean(group)
-            ? t('expense_details.add_expense_details.user_input.cannot_change_group')
-            : group
-              ? t('expense_details.add_expense_details.user_input.remove_group')
-              : 1 < participants.length
-                ? t('expense_details.add_expense_details.user_input.add_more_friends')
-                : t('expense_details.add_expense_details.user_input.search_friends')
+          group
+            ? t('expense_details.add_expense_details.user_input.remove_group')
+            : 1 < participants.length
+              ? t('expense_details.add_expense_details.user_input.add_more_friends')
+              : t('expense_details.add_expense_details.user_input.search_friends')
         }
         value={nameOrEmail}
         onChange={(e) => setNameOrEmail(e.target.value)}
         onKeyDown={handleKeyDown}
         className="min-w-[100px] grow bg-transparent outline-hidden placeholder:text-sm focus:ring-0"
         autoFocus
-        disabled={isEditing && Boolean(group)}
       />
     </div>
   );

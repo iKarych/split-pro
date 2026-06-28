@@ -20,6 +20,7 @@ import { useRouter } from 'next/router';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { BalanceList } from '~/components/Expense/BalanceList';
+import { BulkExpenseActions } from '~/components/Expense/BulkExpenseActions';
 import { ExpenseList } from '~/components/Expense/ExpenseList';
 import AddMembers from '~/components/group/AddMembers';
 import GroupMyBalance from '~/components/group/GroupMyBalance';
@@ -67,6 +68,23 @@ const BalancePage: NextPageWithUser<{
   const clearDefaultSplitMutation = api.group.clearDefaultSplit.useMutation();
 
   const [isInviteCopied, setIsInviteCopied] = useState(false);
+  const [selectedExpenseIds, setSelectedExpenseIds] = useState<Set<string>>(new Set());
+
+  const handleExpenseSelectionChange = useCallback((expenseId: string, selected: boolean) => {
+    setSelectedExpenseIds((currentSelection) => {
+      const nextSelection = new Set(currentSelection);
+
+      if (selected) {
+        nextSelection.add(expenseId);
+      } else {
+        nextSelection.delete(expenseId);
+      }
+
+      return nextSelection;
+    });
+  }, []);
+
+  const clearExpenseSelection = useCallback(() => setSelectedExpenseIds(new Set()), []);
 
   const inviteMembers = useCallback(async () => {
     if (!groupDetailQuery.data) {
@@ -587,7 +605,15 @@ const BalancePage: NextPageWithUser<{
                   expenses={expensesQuery.data}
                   contactId={groupId}
                   isLoading={expensesQuery.isPending}
+                  selectedExpenseIds={selectedExpenseIds}
+                  onExpenseSelectionChange={handleExpenseSelectionChange}
                   isGroup
+                />
+                <BulkExpenseActions
+                  selectedExpenseIds={selectedExpenseIds}
+                  currentGroupId={groupId}
+                  disabled={isArchived}
+                  onClearSelection={clearExpenseSelection}
                 />
               </TabsContent>
               <TabsContent value="balances">

@@ -508,6 +508,7 @@ export async function deleteExpense(expenseId: string, deletedBy: number) {
 export async function editExpense(
   {
     expenseId,
+    groupId,
     paidBy,
     name,
     category,
@@ -560,6 +561,7 @@ export async function editExpense(
     await tx.expense.update({
       where: { id: expenseId },
       data: {
+        groupId,
         paidBy,
         name,
         category,
@@ -598,7 +600,7 @@ export async function editExpense(
       await syncAutomaticCurrencyConversion(tx, {
         originalExpenseId: expenseId,
         currentUserId,
-        groupId: expense.groupId,
+        groupId,
         paidBy,
         amount,
         currency,
@@ -710,7 +712,8 @@ export async function getCompleteFriendsDetails(userId: number) {
     },
   });
 
-  const friends = viewBalances.reduce< Record<
+  const friends = viewBalances.reduce<
+    Record<
       number,
       {
         id: number;
@@ -718,27 +721,25 @@ export async function getCompleteFriendsDetails(userId: number) {
         name?: string | null;
         balances: { currency: string; amount: bigint }[];
       }
-    >>(
-    (acc, balance) => {
-      const { friendId } = balance;
-      acc[friendId] ??= {
-        balances: [],
-        id: friendId,
-        email: balance.friend.email,
-        name: balance.friend.name,
-      };
+    >
+  >((acc, balance) => {
+    const { friendId } = balance;
+    acc[friendId] ??= {
+      balances: [],
+      id: friendId,
+      email: balance.friend.email,
+      name: balance.friend.name,
+    };
 
-      if (0n !== balance.amount) {
-        acc[friendId]?.balances.push({
-          currency: balance.currency,
-          amount: balance.amount,
-        });
-      }
+    if (0n !== balance.amount) {
+      acc[friendId]?.balances.push({
+        currency: balance.currency,
+        amount: balance.amount,
+      });
+    }
 
-      return acc;
-    },
-    {},
-  );
+    return acc;
+  }, {});
 
   return friends;
 }
@@ -769,16 +770,13 @@ export async function importUserBalanceFromSplitWise(
 
   const users = await createUsersFromSplitwise(splitWiseUsers);
 
-  const userMap = users.reduce< Record<string, User>>(
-    (acc, user) => {
-      if (user.email) {
-        acc[user.email] = user;
-      }
+  const userMap = users.reduce<Record<string, User>>((acc, user) => {
+    if (user.email) {
+      acc[user.email] = user;
+    }
 
-      return acc;
-    },
-    {},
-  );
+    return acc;
+  }, {});
 
   const currencyHelperCache: Record<string, ReturnType<typeof getCurrencyHelpers>['toSafeBigInt']> =
     {};
@@ -883,16 +881,13 @@ export async function importGroupFromSplitwise(
 
   const users = await createUsersFromSplitwise(Object.values(splitwiseUserMap));
 
-  const userMap = users.reduce< Record<string, User>>(
-    (acc, user) => {
-      if (user.email) {
-        acc[user.email] = user;
-      }
+  const userMap = users.reduce<Record<string, User>>((acc, user) => {
+    if (user.email) {
+      acc[user.email] = user;
+    }
 
-      return acc;
-    },
-    {},
-  );
+    return acc;
+  }, {});
 
   const missingGroups = await Promise.all(
     splitWiseGroups.map(async (group) => {

@@ -2,9 +2,10 @@ import { ChevronLeftIcon, HandCoins, Pencil, PlusIcon } from 'lucide-react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { DefaultSplitSettings } from '~/components/DefaultSplit/DefaultSplitSettings';
+import { BulkExpenseActions } from '~/components/Expense/BulkExpenseActions';
 import { ExpenseList } from '~/components/Expense/ExpenseList';
 import { DeleteFriend } from '~/components/Friend/DeleteFriend';
 import { Export } from '~/components/Friend/Export';
@@ -43,6 +44,23 @@ const FriendPage: NextPageWithUser = ({ user }) => {
   );
   const upsertFriendDefaultSplitMutation = api.user.upsertFriendDefaultSplit.useMutation();
   const clearFriendDefaultSplitMutation = api.user.clearFriendDefaultSplit.useMutation();
+  const [selectedExpenseIds, setSelectedExpenseIds] = useState<Set<string>>(new Set());
+
+  const handleExpenseSelectionChange = useCallback((expenseId: string, selected: boolean) => {
+    setSelectedExpenseIds((currentSelection) => {
+      const nextSelection = new Set(currentSelection);
+
+      if (selected) {
+        nextSelection.add(expenseId);
+      } else {
+        nextSelection.delete(expenseId);
+      }
+
+      return nextSelection;
+    });
+  }, []);
+
+  const clearExpenseSelection = useCallback(() => setSelectedExpenseIds(new Set()), []);
 
   // Aggregate balances by currency for CumulatedBalances display
   const aggregatedBalances = useMemo(() => {
@@ -206,6 +224,12 @@ const FriendPage: NextPageWithUser = ({ user }) => {
               contactId={_friendId}
               isLoading={expenses.isPending}
               userId={user.id}
+              selectedExpenseIds={selectedExpenseIds}
+              onExpenseSelectionChange={handleExpenseSelectionChange}
+            />
+            <BulkExpenseActions
+              selectedExpenseIds={selectedExpenseIds}
+              onClearSelection={clearExpenseSelection}
             />
           </div>
         )}

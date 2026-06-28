@@ -83,9 +83,11 @@ export const AddOrEditExpensePage: React.FC<{
   const [automaticConversionRate, setAutomaticConversionRate] = React.useState('');
   const [automaticConversionRateOverridden, setAutomaticConversionRateOverridden] =
     React.useState(false);
+  const [automaticConversionTargetCurrencyOverride, setAutomaticConversionTargetCurrencyOverride] =
+    React.useState<CurrencyCode | null>(null);
   const initializedAutomaticConversionExpenseIdRef = React.useRef<string | undefined>(undefined);
 
-  const automaticConversionTargetCurrency = React.useMemo<CurrencyCode | null>(() => {
+  const automaticConversionDefaultTargetCurrency = React.useMemo<CurrencyCode | null>(() => {
     if (group?.defaultCurrency && isCurrencyCode(group.defaultCurrency)) {
       return group.defaultCurrency;
     }
@@ -93,6 +95,13 @@ export const AddOrEditExpensePage: React.FC<{
     const preferredCurrency = currentUser?.defaultCurrency ?? currentUser?.currency;
     return preferredCurrency && isCurrencyCode(preferredCurrency) ? preferredCurrency : null;
   }, [currentUser?.currency, currentUser?.defaultCurrency, group?.defaultCurrency]);
+
+  const automaticConversionTargetCurrency =
+    automaticConversionTargetCurrencyOverride ?? automaticConversionDefaultTargetCurrency;
+
+  const automaticConversionPanelVisible = Boolean(
+    automaticConversionDefaultTargetCurrency && isCurrencyCode(currency) && 0n !== amount,
+  );
 
   const automaticConversionEnabled = Boolean(
     automaticConversionTargetCurrency &&
@@ -113,6 +122,16 @@ export const AddOrEditExpensePage: React.FC<{
   );
 
   const automaticConversionPairRef = React.useRef('');
+  const automaticConversionDefaultTargetRef = React.useRef<CurrencyCode | null>(null);
+
+  React.useEffect(() => {
+    if (automaticConversionDefaultTargetRef.current === automaticConversionDefaultTargetCurrency) {
+      return;
+    }
+
+    automaticConversionDefaultTargetRef.current = automaticConversionDefaultTargetCurrency;
+    setAutomaticConversionTargetCurrencyOverride(null);
+  }, [automaticConversionDefaultTargetCurrency]);
 
   React.useEffect(() => {
     if (
@@ -124,17 +143,15 @@ export const AddOrEditExpensePage: React.FC<{
     }
 
     initializedAutomaticConversionExpenseIdRef.current = expenseId;
-    automaticConversionPairRef.current = `${currency}-${automaticConversionTargetCurrency ?? ''}`;
-    const { rate, rateOverridden } = editingExpenseQuery.data.autoCurrencyConversion;
+    const { rate, rateOverridden, toCurrency } = editingExpenseQuery.data.autoCurrencyConversion;
+    automaticConversionPairRef.current = `${currency}-${toCurrency}`;
+    if (isCurrencyCode(toCurrency)) {
+      setAutomaticConversionTargetCurrencyOverride(toCurrency);
+    }
     const precision = getRatePrecision(rate);
     setAutomaticConversionRate(rate.toFixed(precision));
     setAutomaticConversionRateOverridden(rateOverridden);
-  }, [
-    automaticConversionTargetCurrency,
-    currency,
-    editingExpenseQuery.data?.autoCurrencyConversion,
-    expenseId,
-  ]);
+  }, [currency, editingExpenseQuery.data?.autoCurrencyConversion, expenseId]);
 
   React.useEffect(() => {
     const pairKey = `${currency}-${automaticConversionTargetCurrency ?? ''}`;
@@ -261,6 +278,17 @@ export const AddOrEditExpensePage: React.FC<{
       setAutomaticConversionRate(automaticConversionRateQuery.data.rate.toFixed(precision));
     }
   }, [automaticConversionRateQuery.data?.rate]);
+
+  const onChangeAutomaticConversionTargetCurrency = useCallback(
+    (newCurrency: CurrencyCode | null) => {
+      setAutomaticConversionTargetCurrencyOverride(newCurrency);
+    },
+    [],
+  );
+
+  const resetAutomaticConversionTargetCurrency = useCallback(() => {
+    setAutomaticConversionTargetCurrencyOverride(null);
+  }, []);
 
   const addExpense = useCallback(async () => {
     if (!paidBy) {
@@ -483,7 +511,7 @@ export const AddOrEditExpensePage: React.FC<{
           {t('actions.save')}
         </Button>{' '}
       </div>
-      <UserInput isEditing={Boolean(expenseId)} />
+      <UserInput />
       {showFriends || (1 === participants.length && !group) ? (
         <SelectUserOrGroup enableSendingInvites={enableSendingInvites} />
       ) : (
@@ -510,9 +538,33 @@ export const AddOrEditExpensePage: React.FC<{
               rightIcon={currencyConversionComponent}
             />
           </div>
-          {automaticConversionEnabled && automaticConversionTargetCurrency ? (
+          {automaticConversionPanelVisible && automaticConversionTargetCurrency ? (
             <div className="rounded-md border px-3 py-2 text-sm">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="flex flex-col gap-1">
+                  <Label>{t('currency_conversion.target_currency')}</Label>
+                  <div className="flex items-center gap-2">
+                    <CurrencyPicker
+                      currentCurrency={automaticConversionTargetCurrency}
+                      onCurrencyPick={onChangeAutomaticConversionTargetCurrency}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-9 shrink-0"
+                      disabled={
+                        !automaticConversionTargetCurrencyOverride ||
+                        automaticConversionTargetCurrencyOverride ===
+                          automaticConversionDefaultTargetCurrency
+                      }
+                      onClick={resetAutomaticConversionTargetCurrency}
+                    >
+                      <RefreshCcwDot className="size-4" />
+                      <span className="sr-only">{t('currency_conversion.reset_target')}</span>
+                    </Button>
+                  </div>
+                </div>
                 <div className="flex flex-1 flex-col gap-1">
                   <Label>{t('currency_conversion.automatic_rate')}</Label>
                   <div className="flex items-center gap-2">
@@ -523,8 +575,11 @@ export const AddOrEditExpensePage: React.FC<{
                       value={automaticConversionRate}
                       inputMode="decimal"
                       onChange={onChangeAutomaticConversionRate}
+                      placeholder={automaticConversionEnabled ? undefined : '1'}
                       disabled={
-                        automaticConversionRateQuery.isPending && !automaticConversionRateOverridden
+                        !automaticConversionEnabled ||
+                        (automaticConversionRateQuery.isPending &&
+                          !automaticConversionRateOverridden)
                       }
                     />
                     <Button
@@ -533,6 +588,7 @@ export const AddOrEditExpensePage: React.FC<{
                       size="icon"
                       className="size-9 shrink-0"
                       disabled={
+                        !automaticConversionEnabled ||
                         automaticConversionRateQuery.isPending ||
                         !automaticConversionRateQuery.data?.rate ||
                         !automaticConversionRateOverridden
@@ -549,6 +605,9 @@ export const AddOrEditExpensePage: React.FC<{
                     1 {currency} = {automaticConversionRate || '-'}{' '}
                     {automaticConversionTargetCurrency}
                   </span>
+                  {!automaticConversionEnabled ? (
+                    <span>{t('currency_conversion.no_conversion_needed')}</span>
+                  ) : null}
                   {automaticConversionRateQuery.isPending && !automaticConversionRateOverridden ? (
                     <span>{t('currency_conversion.fetching_rate')}</span>
                   ) : null}
