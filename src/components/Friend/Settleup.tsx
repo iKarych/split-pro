@@ -10,6 +10,7 @@ import { BigMath } from '~/utils/numbers';
 import { useSession } from 'next-auth/react';
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import type { MinimalBalance } from '~/types/balance.types';
+import { DateSelector } from '../AddExpense/DateSelector';
 import { EntityAvatar } from '../ui/avatar';
 import { Button } from '../ui/button';
 import { CurrencyInput } from '../ui/currency-input';
@@ -47,6 +48,7 @@ export const SettleUp: React.FC<
   const [amountStr, setAmountStr] = useState<string>(
     getCurrencyHelpersCached(balanceToSettle?.currency ?? '').toUIString(amount),
   );
+  const [settlementDate, setSettlementDate] = useState<Date>(new Date());
 
   const isCurrentUserPaying = 0 > (balanceToSettle?.amount ?? 0);
 
@@ -85,6 +87,7 @@ export const SettleUp: React.FC<
         paidBy: isCurrentUserPaying ? currentUser.id : friend.id,
         category: DEFAULT_CATEGORY,
         groupId: balanceToSettle.groupId,
+        expenseDate: settlementDate,
       },
       {
         onSuccess: () => {
@@ -104,6 +107,7 @@ export const SettleUp: React.FC<
     isCurrentUserPaying,
     friend,
     addExpenseMutation,
+    settlementDate,
     utils,
     t,
   ]);
@@ -174,6 +178,13 @@ export const SettleUp: React.FC<
             strValue={amountStr}
             className="mx-auto mt-4 w-[150px] text-center text-lg"
             onValueChange={onCurrencyInputValueChange}
+          />
+          <DateSelector
+            mode="single"
+            required
+            selected={settlementDate}
+            onSelect={setSettlementDate}
+            popoverPortalled={false}
           />
         </div>
       )}

@@ -7,6 +7,7 @@ import { DEFAULT_CATEGORY } from '~/lib/category';
 import { api } from '~/utils/api';
 import { BigMath } from '~/utils/numbers';
 
+import { DateSelector } from '../AddExpense/DateSelector';
 import { EntityAvatar } from '../ui/avatar';
 import { CurrencyInput } from '../ui/currency-input';
 import { AppDrawer } from '../ui/drawer';
@@ -24,6 +25,7 @@ export const GroupSettleUp: React.FC<{
   const { displayName, t, getCurrencyHelpersCached } = useTranslationWithUtils();
   const [amount, setAmount] = useState<bigint>(BigMath.abs(_amount));
   const [amountStr, setAmountStr] = useState(getCurrencyHelpersCached(currency).toUIString(amount));
+  const [settlementDate, setSettlementDate] = useState<Date>(new Date());
 
   const onCurrencyInputValueChange = React.useCallback(
     ({ strValue, bigIntValue }: { strValue?: string; bigIntValue?: bigint }) => {
@@ -67,10 +69,12 @@ export const GroupSettleUp: React.FC<{
         ],
         paidBy: sender.id,
         category: DEFAULT_CATEGORY,
+        expenseDate: settlementDate,
       },
       {
         onSuccess: () => {
           utils.group.invalidate().catch(console.error);
+          utils.expense.invalidate().catch(console.error);
         },
         onError: (error) => {
           console.error('Error while saving expense:', error);
@@ -78,7 +82,7 @@ export const GroupSettleUp: React.FC<{
         },
       },
     );
-  }, [sender, receiver, amount, utils, addExpenseMutation, currency, groupId, t]);
+  }, [sender, receiver, amount, utils, addExpenseMutation, currency, groupId, settlementDate, t]);
 
   return (
     <AppDrawer
@@ -109,6 +113,13 @@ export const GroupSettleUp: React.FC<{
           strValue={amountStr}
           className="mx-auto mt-4 w-[150px] text-center text-lg"
           onValueChange={onCurrencyInputValueChange}
+        />
+        <DateSelector
+          mode="single"
+          required
+          selected={settlementDate}
+          onSelect={setSettlementDate}
+          popoverPortalled={false}
         />
       </div>
     </AppDrawer>

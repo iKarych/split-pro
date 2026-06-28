@@ -56,6 +56,9 @@ const ExpenseDetails: React.FC<ExpenseDetailsProps> = ({ user, expense }) => {
   }, [t, expense.recurrence, cronParser]);
 
   const { toUIString } = getCurrencyHelpersCached(expense.currency);
+  const shouldShowExpenseDate =
+    SplitType.SETTLEMENT === expense.splitType ||
+    !isSameDay(expense.expenseDate, expense.createdAt);
 
   return (
     <>
@@ -70,7 +73,7 @@ const ExpenseDetails: React.FC<ExpenseDetailsProps> = ({ user, expense }) => {
               {expense.transactionId && <Landmark className="text-positive h-4 w-4" />}
             </div>
             <p className="text-2xl font-semibold">{toUIString(expense.amount)}</p>
-            {!isSameDay(expense.expenseDate, expense.createdAt) ? (
+            {shouldShowExpenseDate ? (
               <p className="text-sm text-gray-500">
                 {toUIDate(expense.expenseDate, { year: true })}
               </p>
@@ -286,13 +289,13 @@ export const EditSettlement: React.FC<{ expense: ExpenseDetailsOutput }> = ({ ex
     [],
   );
 
-  const saveExpense = useCallback(() => {
+  const saveExpense = useCallback(async () => {
     if (!amount || !sender || !receiver) {
       return;
     }
 
-    addExpenseMutation.mutate(
-      {
+    try {
+      await addExpenseMutation.mutateAsync({
         expenseId: expense.id,
         name: t('ui.settle_up_name'),
         currency: expense.currency,
@@ -312,17 +315,16 @@ export const EditSettlement: React.FC<{ expense: ExpenseDetailsOutput }> = ({ ex
         category: DEFAULT_CATEGORY,
         groupId: expense.groupId,
         expenseDate,
-      },
-      {
-        onSuccess: () => {
-          apiUtils.invalidate().catch(console.error);
-        },
-        onError: (error) => {
-          console.error('Error while saving expense:', error);
-          toast.error(t('errors.saving_expense'));
-        },
-      },
-    );
+      });
+
+      await Promise.all([
+        apiUtils.expense.invalidate(),
+        expense.groupId ? apiUtils.group.invalidate() : apiUtils.user.invalidate(),
+      ]);
+    } catch (error) {
+      console.error('Error while saving expense:', error);
+      toast.error(t('errors.saving_expense'));
+    }
   }, [amount, sender, receiver, expense, addExpenseMutation, expenseDate, apiUtils, t]);
 
   if (!sender || !receiver) {
@@ -340,7 +342,7 @@ export const EditSettlement: React.FC<{ expense: ExpenseDetailsOutput }> = ({ ex
       title={t('ui.settlement')}
       actionTitle={t('actions.save')}
       actionOnClick={saveExpense}
-      actionDisabled={!amount}
+      actionDisabled={!amount || addExpenseMutation.isPending}
       className="h-[70vh]"
       shouldCloseOnAction
     >
